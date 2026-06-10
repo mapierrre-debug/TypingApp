@@ -1,0 +1,227 @@
+@page "/"
+@inject HttpClient Http
+@using System.Timers
+
+<div class="app-container">
+    <header class="app-header animate-fade-in">
+        <div class="brand">
+            <span class="bolt-icon">?</span>
+            <h1>SwiftType</h1>
+        </div>
+        <p class="subtitle">Elevate your typing mastery</p>
+    </header>
+
+    <main class="main-layout">
+        <section class="sidebar animate-slide-in">
+            <h3>Select a Challenge</h3>
+            <div class="prompt-list">
+                @if (prompts == null)
+                {
+                    <div class="loader">Loading challenges...</div>
+                }
+                else
+                {
+                    @foreach (var p in prompts)
+                    {
+                        <button class="prompt-card @(selectedPrompt?.Id == p.Id ? "active" : "")" @onclick="() => SelectPrompt(p)">
+                            <div class="card-meta">@p.Category</div>
+                            <h4>@p.Title</h4>
+                        </button>
+                    }
+                }
+            </div>
+        </section>
+
+        <section class="workspace animate-fade-in-delayed">
+            @if (selectedPrompt != null)
+            {
+                <div class="stats-dashboard">
+                    <div class="stat-box">
+                        <span class="stat-val">@wpm</span>
+                        <span class="stat-lbl">WPM</span>
+                    </div>
+                    <div class="stat-box">
+                        <span class="stat-val">@accuracy%</span>
+                        <span class="stat-lbl">Accuracy</span>
+                    </div>
+                    <div class="stat-box">
+                        <span class="stat-val">@timeElapsed</span>
+                        <span class="stat-lbl">Seconds</span>
+                    </div>
+                </div>
+
+                <div class="text-display-card">
+                    <div class="text-scroller">
+                        @for (int i = 0; i < selectedPrompt.Text.Length; i++)
+                        {
+                            var ch = selectedPrompt.Text[i];
+                            string cssClass = "char-future";
+                            
+                            if (i < userInput.Length)
+                            {
+                                cssClass = userInput[i] == ch ? "char-correct" : "char-incorrect";
+                            }
+                            else if (i == userInput.Length)
+                            {
+                                cssClass = "char-cursor";
+                            }
+
+                            <span class="@cssClass">@ch</span>
+                        }
+                    </div>
+                </div>
+
+                <div class="input-container">
+                    @if (!isCompleted)
+                    {
+                        <textarea class="type-engine-input" 
+                                  placeholder="Type the sequence above to initiate tracking..."
+                                  value="@userInput"
+                                  @oninput="HandleInput"
+                                  disabled="@isCompleted"
+                                  inputmode="verbatim"
+                                  spellcheck="false"
+                                  autocomplete="off" />
+                    }
+                    else
+                    {
+                        <div class="completion-banner animate-pop">
+                            <h3>?? Completion Achieved!</h3>
+                            <p>Superb performance. Try another challenge or restart to beat your score.</p>
+                            <button class="btn-retry" @onclick="ResetSession">Restart Challenge</button>
+                        </div>
+                    }
+                </div>
+            }
+            else
+            {
+                <div class="empty-state">
+                    <span class="empty-icon">??</span>
+                    <p>Select a challenge from the left pane to initialize the typing engine.</p>
+                </div>
+            }
+        </section>
+    </main>
+</div>
+
+@code {
+    private List<TypingPrompt>? prompts;
+    private TypingPrompt? selectedPrompt;
+    private string userInput = "";
+    private int timeElapsed = 0;
+    private int wpm = 0;
+    private int accuracy = 100;
+    private bool isTracking = false;
+    private bool isCompleted = false;
+    private Timer? sessionTimer;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            prompts = await Http.GetFromJsonAsync<List<TypingPrompt>>("api/prompts");
+            if (prompts?.Count > 0)
+            {
+                SelectPrompt(prompts[0]);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Data download anomaly: {ex.Message}");
+        }
+    }
+
+    private void SelectPrompt(TypingPrompt prompt)
+    {
+        selectedPrompt = prompt;
+        ResetSession();
+    }
+
+    private void ResetSession()
+    {
+        StopTimer();
+        userInput = "";
+        timeElapsed = 0;
+        wpm = 0;
+        accuracy = 100;
+        isTracking = false;
+        isCompleted = false;
+        StateHasChanged();
+    }
+
+    private void HandleInput(ChangeEventArgs e)
+    {
+        if (selectedPrompt == null || isCompleted) return;
+
+        var val = e.Value?.ToString() ?? "";
+        
+        // Prevent typing past the prompt length
+        if (val.Length > selectedPrompt.Text.Length)
+        {
+            val = val.Substring(0, selectedPrompt.Text.Length);
+        }
+
+        userInput = val;
+
+        if (!isTracking && userInput.Length > 0)
+        {
+            StartTimer();
+        }
+
+        CalculateLiveStats();
+
+        if (userInput.Length == selectedPrompt.Text.Length)
+        {
+            CompleteSession();
+        }
+    }
+
+    private void StartTimer()
+    {
+        isTracking = true;
+        sessionTimer = new Timer(1000);
+        sessionTimer.Elapsed += (s, e) => InvokeAsync(() => {
+            timeElapsed++;
+            CalculateLiveStats();
+            StateHasChanged();
+        });
+        sessionTimer.Start();
+    }
+
+    private void StopTimer()
+    {
+        if (sessionTimer != null)
+        {
+            sessionTimer.Stop();
+            sessionTimer.Dispose();
+            sessionTimer = null;
+        }
+        isTracking = false;
+    }
+
+    private void CalculateLiveStats()
+    {
+        if (string.IsNullOrEmpty(userInput) || selectedPrompt == null) return;
+
+        int correctChars = 0;
+        int minLength = Math.Min(userInput.Length, selectedPrompt.Text.Length);
+
+        for (int i = 0; i < minLength; i++)
+        {
+            if (userInput[i] == selectedPrompt.Text[i])
+                correctChars++;
+        }
+
+        accuracy = (int)Math.Round((double)correctChars / userInput.Length * 100);
+
+        // Standard WPM formula calculation: (chars / 5) / minutes
+        double minutes = timeElapsed > 0 ? (double)timeElapsed / 60.0 : 1.0 / 60.0;
+        wpm = (int)Math.Max(0, Math.Round((userInput.Length / 5.0) / minutes));
+    }
+
+    private void CompleteSession()
+    {
+        StopTimer();
+        isCompleted = true;
+    }
+}
